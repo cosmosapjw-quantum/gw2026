@@ -1,0 +1,11 @@
+name: polytrope-star-lab
+channels:
+  - conda-forge
+dependencies:
+  # SciPy 1.17.0 release requires Python 3.11–3.14 and NumPy >= 1.26.4 :contentReference[oaicite:2]{index=2}
+  - python=3.12
+  - numpy>=1.26.4
+  - scipy>=1.17.0     # includes scipy.differentiate.jacobian :contentReference[oaicite:3]{index=3}
+  - matplotlib
+  - ffmpeg            # conda-forge::ffmpeg :contentReference[oaicite:4]{index=4}
+  - pip               # (optional) keep for emergency pip installs
