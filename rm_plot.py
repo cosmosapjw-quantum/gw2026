@@ -170,7 +170,8 @@ def rm_generator():
     Rlist = np.empty(0)
     Mlist = np.empty(0)
     for rhoc in np.logspace(1e-9,1e-1,100,base=10):
-        R, M = solver.shooting(rhoc,10.0,0.1)
+        print("rhoc = ",rhoc)
+        R, M = solver.shooting(rhoc,1.0,0.1)
         if R <= 2 * M:
                     break
         Rlist = np.append(Rlist,R)
