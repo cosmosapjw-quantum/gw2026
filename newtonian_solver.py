@@ -1,7 +1,6 @@
 import numpy as np
-from scipy.integrate import solve_ivp
 from scipy.differentiate import jacobian
-from scipy.optimize import fsolve
+import time
 
 K = 1.0*1e2
 n = 0.8
@@ -9,25 +8,25 @@ rhoc = 1.28*1e-3
 h_c = K*(1+n)*rhoc**(1.0/n)
 
 def rho_from_h(h):
-    h_pos = np.maximum(h, 0.0)  # avoid negative -> NaN for fractional n
+    h_pos = np.maximum(h, 0.0)
     return (h_pos / (K*(n+1.0)))**n
 
 def hdot(rhat,phi,phidot,h,Rs):
     return -phidot
 
 def phiddot(rhat,phi,phidot,h,Rs):
-    return -(2./rhat)*phidot + 4.*np.pi*Rs**2 * rho_from_h(h)
+    return -(2./rhat)*phidot + 4.*np.pi* (Rs**2) * rho_from_h(h)
 
 def nrmethod2D(f,x0,eps):
     x0 = np.asarray(x0, dtype=float)
 
-    jac0 = jacobian(f, x0).df
+    jac0 = jacobian(f, x0, maxiter=5, order=4).df
     fx0  = np.asarray(f(x0), dtype=float)
     x1   = x0 - np.linalg.solve(jac0, fx0)
 
     while True:
         x0 = x1
-        jac1 = jacobian(f, x0, order=4).df
+        jac1 = jacobian(f, x0, maxiter=5, order=4).df
         fx1  = np.asarray(f(x0), dtype=float)
         x1   = x0 - np.linalg.solve(jac1, fx1)
         if (np.abs(x1 - x0) < eps).all():
@@ -35,11 +34,9 @@ def nrmethod2D(f,x0,eps):
     return x1
 
 def rkheunPoisson_full(phiddot,hdot,phi_ini,h_ini,t_ini,t_fin,point,Rs):
-    # step consistent with linspace endpoints
-    step = (t_fin - t_ini) / (point - 1)
-    t = np.linspace(t_ini, t_fin, point)
+    step = (t_fin - t_ini) / point
+    t = np.linspace(t_ini, t_fin, point+1)
 
-    # broadcast batch shape (supports scalar or vector Rs / ICs)
     Rs_arr = np.asarray(Rs, dtype=float)
     phi0 = np.asarray(phi_ini[0], dtype=float)
     phidot0 = np.asarray(phi_ini[1], dtype=float)
@@ -47,20 +44,20 @@ def rkheunPoisson_full(phiddot,hdot,phi_ini,h_ini,t_ini,t_fin,point,Rs):
     phi0, phidot0, h0, Rs_arr = np.broadcast_arrays(phi0, phidot0, h0, Rs_arr)
     batch_shape = phi0.shape
 
-    phi = np.empty((point,)+batch_shape, dtype=float)
-    phidot = np.empty((point,)+batch_shape, dtype=float)
-    h = np.empty((point,)+batch_shape, dtype=float)
+    phi = np.empty((point+1,)+batch_shape, dtype=float)
+    phidot = np.empty((point+1,)+batch_shape, dtype=float)
+    h = np.empty((point+1,)+batch_shape, dtype=float)
 
     phi[0] = phi0
     phidot[0] = phidot0
     h[0] = h0
 
-    for i in range(point-1):
-        k1phi = phiddot(t[i],   phi[i],                phidot[i],                h[i],                Rs_arr)
-        k1h   = hdot  (t[i],   phi[i],                phidot[i],                h[i],                Rs_arr)
+    for i in range(point):
+        k1phi = phiddot(t[i], phi[i], phidot[i], h[i], Rs_arr)
+        k1h   = hdot(t[i], phi[i], phidot[i], h[i], Rs_arr)
 
-        k2phi = phiddot(t[i+1], phi[i]+step*phidot[i], phidot[i]+step*k1phi,     h[i]+step*k1h,       Rs_arr)
-        k2h   = hdot  (t[i+1], phi[i]+step*phidot[i], phidot[i]+step*k1phi,      h[i]+step*k1h,       Rs_arr)
+        k2phi = phiddot(t[i+1], phi[i]+step*phidot[i], phidot[i]+step*k1phi, h[i]+step*k1h, Rs_arr)
+        k2h   = hdot(t[i+1], phi[i]+step*phidot[i], phidot[i]+step*k1phi, h[i]+step*k1h, Rs_arr)
 
         phi[i+1]    = phi[i]    + step*phidot[i] + 0.5 * step**2 * k1phi
         phidot[i+1] = phidot[i] + 0.5*step*(k1phi+k2phi)
@@ -68,34 +65,42 @@ def rkheunPoisson_full(phiddot,hdot,phi_ini,h_ini,t_ini,t_fin,point,Rs):
 
     return t, phi, phidot, h
 
-def rkheunPoisson_end(phiddot,hdot,phi_ini,h_ini,t_ini,t_fin,point,Rs):
-    # step consistent with linspace endpoints
-    step = (t_fin - t_ini) / (point - 1)
-    t = np.linspace(t_ini, t_fin, point)
+def rkheunPoisson_end(phiddot, hdot, phi_ini, h_ini, t_ini, t_fin, point, Rs):
+    step = (t_fin - t_ini) / point
+    t = np.linspace(t_ini, t_fin, point+1)
 
     Rs_arr = np.asarray(Rs, dtype=float)
-    phi = np.asarray(phi_ini[0], dtype=float)
+    phi    = np.asarray(phi_ini[0], dtype=float)
     phidot = np.asarray(phi_ini[1], dtype=float)
-    h = np.asarray(h_ini, dtype=float)
+    h      = np.asarray(h_ini, dtype=float)
 
-    # vectorize via broadcasting
     phi, phidot, h, Rs_arr = np.broadcast_arrays(phi, phidot, h, Rs_arr)
 
-    for i in range(point-1):
-        k1phi = phiddot(t[i],   phi,                 phidot,                 h,                 Rs_arr)
-        k1h   = hdot  (t[i],   phi,                 phidot,                 h,                 Rs_arr)
+    for i in range(point):
+        # k1 = f(t_i, y_i)
+        k1_phi    = phidot
+        k1_phidot = phiddot(t[i], phi, phidot, h, Rs_arr)
+        k1_h      = hdot(t[i], phi, phidot, h, Rs_arr)
 
-        k2phi = phiddot(t[i+1], phi+step*phidot,     phidot+step*k1phi,      h+step*k1h,         Rs_arr)
-        k2h   = hdot  (t[i+1], phi+step*phidot,     phidot+step*k1phi,       h+step*k1h,         Rs_arr)  # FIX: phi[i] -> phi
+        # predictor (Euler)
+        phi_p    = phi    + step*k1_phi
+        phidot_p = phidot + step*k1_phidot
+        h_p      = h      + step*k1_h
 
-        phi    = phi    + step*phidot + 0.5 * step**2 * k1phi
-        phidot = phidot + 0.5*step*(k1phi+k2phi)
-        h      = h      + 0.5*step*(k1h+k2h)
+        # k2 = f(t_{i+1}, y_pred)
+        k2_phi    = phidot_p
+        k2_phidot = phiddot(t[i+1], phi_p, phidot_p, h_p, Rs_arr)
+        k2_h      = hdot(t[i+1], phi_p, phidot_p, h_p, Rs_arr)
+
+        # corrector (average slope)
+        phi    = phi    + 0.5*step*(k1_phi + k2_phi)
+        phidot = phidot + 0.5*step*(k1_phidot + k2_phidot)
+        h      = h      + 0.5*step*(k1_h + k2_h)
 
     return phi, phidot
 
 def bound_inter(Rs):
-    phi, phidot = rkheunPoisson_end(phiddot, hdot, [0.0, 0.0], h_c, 1e-5, 0.5, 500, Rs)
+    phi, phidot = rkheunPoisson_end(phiddot, hdot, [0.0, 0.0], h_c, 1e-6, 0.5, 500, Rs)
     return phi, phidot
 
 def bound_outer(Rs, Ms):
@@ -113,7 +118,12 @@ def func(x):
     return np.stack([phi_inter-phi_outer, phidot_inter-phidot_outer], axis=0)
 
 def shooting(Rs0, Ms0):
-    Rs, Ms = nrmethod2D(func, np.array([Rs0, Ms0], dtype=float), 1e-5)
+    Rs, Ms = nrmethod2D(func, np.array([Rs0, Ms0], dtype=float), 1e-8)
     return Rs, Ms
 
+
+
+time1 = time.time()
 print(shooting(1.0, 1.0))
+time2 = time.time()
+print("time = ", time2-time1)
