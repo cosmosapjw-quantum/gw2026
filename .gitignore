@@ -2,3 +2,5 @@
 *.dat
 *.npy
 __pycache__
+/test
+.gitignore
