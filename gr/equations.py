@@ -2,7 +2,7 @@
 import numpy as np
 
 # Polytrope parameters (natural units: G=c=1 assumed in TOV form)
-K = 100.0
+K = 50.0
 n = 1.0  # polytropic index
 # Gamma = 1 + 1/n  (implicit)
 

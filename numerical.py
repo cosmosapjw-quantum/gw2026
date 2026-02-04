@@ -115,7 +115,7 @@ class Numerical(Equations):
 
         phi, phidot, h = self.rkheunNewton_end(
             phi0, phidot0, h0,
-            eps, self.r_match, int(point),
+            0.0, self.r_match, int(point),
             Rs_arr
         )
         return phi, phidot, h
