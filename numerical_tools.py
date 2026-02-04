@@ -304,7 +304,7 @@ def newton_damped_vectorized(
     xtol: float = 1e-10,
     maxiter: int = 25,
     rel_step: float = 1e-6,
-    armijo_c: float = 1e-3,
+    armijo_c: float = 1e-4,
     alpha_min: float = 2.0**-20,
     project: Optional[Callable[[np.ndarray], np.ndarray]] = None,
 ) -> RootResult:
