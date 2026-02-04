@@ -1,7 +1,7 @@
 # numerical.py
 import numpy as np
+from scipy.differentiate import jacobian  # user's environment assumed to have this
 from equations import Equations, K, n
-
 
 class Numerical(Equations):
     def __init__(self):
@@ -9,25 +9,25 @@ class Numerical(Equations):
 
         # --- stage schedule (coarse -> fine) ---
         self.point_prune = 80
-        self.point_main = 150
+        self.point_main  = 150
 
-        # --- regularization / matching ---
-        self.eps_center = 1e-6
-        self.r_match = 0.5
+        # --- geometry/regularization ---
+        self.eps_center = 1e-6   # start at rhat=eps (avoid r=0 singular)
+        self.r_match    = 0.5    # matching point
 
         # --- Newton/FD knobs ---
-        self.rel_step = 1e-4
-        self.armijo_c = 1e-4
-        self.alpha_min = 2.0**-20
+        self.rel_step   = 1e-4
+        self.armijo_c   = 1e-4
+        self.alpha_min  = 2.0**-20
 
-        # cache per rhoc
-        self.rhoc = None
-        self.h_c = None
+        # per-rhoc cache
+        self.rhoc   = None
+        self.h_c    = None
 
-        # func() default resolution
+        # active point count used by func()
         self.point_eval = self.point_main
 
-        # stats
+        # lightweight stats
         self.stats = dict(
             func_calls=0,
             jac_batches=0,
@@ -36,71 +36,132 @@ class Numerical(Equations):
             failures=0,
         )
 
+    # -------------------------
+    # Central enthalpy (your convention)
+    # -------------------------
     def central_entalphy(self, rhoc):
+        # rhoc interpreted as central rest-mass density rho0_c
         return K * (1.0 + n) * rhoc**(1.0 / n)
 
-    # ------------------------------------------------------------
-    # Custom Heun (RK2) for Newton/Poisson system in (phi, phidot, h)
-    # ------------------------------------------------------------
-    def rkheunNewton_end(self, phi_ini, phidot_ini, h_ini, rhat_ini, rhat_fin, point, Rs):
+    # -------------------------
+    # SciPy FD Jacobian helper (optional)
+    # -------------------------
+    def get_numerical_jacobian(self, f, x0, eps=1e-8):
+        x0 = np.asarray(x0, dtype=float)
+        n_dim = len(x0)
+        fx = np.asarray(f(x0), dtype=float)
+        jac = np.zeros((n_dim, n_dim), dtype=float)
+
+        for i in range(n_dim):
+            x_perturbed = x0.copy()
+            x_perturbed[i] += eps
+            fx_perturbed = np.asarray(f(x_perturbed), dtype=float)
+            jac[:, i] = (fx_perturbed - fx) / eps
+        return jac
+
+    def nrmethod2D(self, f, x0, eps):
         """
-        Integrate from rhat_ini to rhat_fin using custom Heun (RK2) on:
-          phi'    = phidot
-          phidot' = phiddot(rhat, phi, phidot, h, Rs)
-          h'      = -phidot
-        Supports broadcasting over batch Rs (and batch Ms through ICs).
+        Damped Newton using scipy.differentiate.jacobian (FD-based).
+        Kept for compatibility; main pipeline uses newton_damped below.
+        """
+        x = np.asarray(x0, dtype=float)
+
+        max_newton = 30
+        c_armijo = 1e-4
+        alpha_min = 2.0**-20
+
+        for _ in range(max_newton):
+            fx = np.asarray(f(x), dtype=float)
+            if not np.all(np.isfinite(fx)):
+                raise RuntimeError("f(x) became non-finite.")
+
+            fnorm = np.linalg.norm(fx, ord=2)
+            if fnorm < eps:
+                return x
+
+            init_step = 1e-3 * np.maximum(1.0, np.abs(x))
+
+            J = jacobian(
+                f, x,
+                order=2,
+                maxiter=1,
+                initial_step=init_step
+            ).df
+
+            dx = np.linalg.solve(J, fx)
+
+            alpha = 1.0
+            while alpha >= alpha_min:
+                x_new = x - alpha * dx
+                if (x_new[0] > 0.0) and (x_new[1] > 0.0):
+                    fx_new = np.asarray(f(x_new), dtype=float)
+                    if np.all(np.isfinite(fx_new)):
+                        fnorm_new = np.linalg.norm(fx_new, ord=2)
+                        if fnorm_new <= (1.0 - c_armijo * alpha) * fnorm:
+                            x = x_new
+                            break
+                alpha *= 0.5
+
+            if alpha < alpha_min:
+                x = np.maximum(x - alpha_min * dx, 1e-12)
+
+            if np.max(np.abs(alpha * dx)) < eps:
+                return x
+
+        raise RuntimeError("Newton did not converge within max iterations.")
+
+    # -------------------------
+    # Custom Heun(RK2) integrator for TOV in (m, h) with independent var rhat
+    # -------------------------
+    def rkheunTOV_end(self, m_ini, h_ini, rhat_ini, rhat_fin, point, Rs):
+        """
+        Integrate from rhat_ini to rhat_fin (can be inward if rhat_fin < rhat_ini)
+        using custom Heun (RK2) on the system:
+          dm/drhat = tov_mdot(...)
+          dh/drhat = tov_hdot(...)
+        Supports broadcasting over Rs (and thus over batch evaluations for FD Jacobian).
         """
         step = (rhat_fin - rhat_ini) / point
         rhat = float(rhat_ini)
 
         Rs_arr = np.asarray(Rs, dtype=float)
-        phi = np.asarray(phi_ini, dtype=float)
-        phidot = np.asarray(phidot_ini, dtype=float)
+        m = np.asarray(m_ini, dtype=float)
         h = np.asarray(h_ini, dtype=float)
 
-        # broadcast for batch evaluation
-        phi, phidot, h, Rs_arr = np.broadcast_arrays(phi, phidot, h, Rs_arr)
+        m, h, Rs_arr = np.broadcast_arrays(m, h, Rs_arr)
 
         for _ in range(int(point)):
-            # k1 at (rhat, y)
-            k1_phi = phidot
-            k1_phidot = self.phiddot(rhat, phi, phidot, h, Rs_arr)
-            k1_h = -phidot
+            k1_m = self.tov_mdot(rhat, m, h, Rs_arr)
+            k1_h = self.tov_hdot(rhat, m, h, Rs_arr)
 
-            # predictor (Euler)
-            phi_p = phi + step * k1_phi
-            phidot_p = phidot + step * k1_phidot
+            m_p = m + step * k1_m
             h_p = h + step * k1_h
             r2 = rhat + step
 
-            # k2 at (r2, y_pred)
-            k2_phi = phidot_p
-            k2_phidot = self.phiddot(r2, phi_p, phidot_p, h_p, Rs_arr)
-            k2_h = -phidot_p
+            k2_m = self.tov_mdot(r2, m_p, h_p, Rs_arr)
+            k2_h = self.tov_hdot(r2, m_p, h_p, Rs_arr)
 
-            # corrector (average slopes)
-            phi = phi + 0.5 * step * (k1_phi + k2_phi)
-            phidot = phidot + 0.5 * step * (k1_phidot + k2_phidot)
+            m = m + 0.5 * step * (k1_m + k2_m)
             h = h + 0.5 * step * (k1_h + k2_h)
             rhat = r2
 
-        return phi, phidot, h
+        return m, h
 
-    # ------------------------------------------------------------
-    # Boundary integrations
-    # ------------------------------------------------------------
+    # -------------------------
+    # Boundary integrations (TOV)
+    # -------------------------
     def bound_inter(self, rhoc, Rs, point=None):
         """
-        Inner integration: rhat=eps -> r_match
-        Regularized series start:
-          phidot ~ a*rhat, phi ~ 0.5*a*rhat^2, h ~ h_c - phi
-        where a = (4π/3) Rs^2 rhoc (Newtonian Poisson center)
+        Inner integration: rhat = eps_center -> r_match
+        BC at center (regularized at eps):
+          h(eps) = h_c
+          m(eps) ≈ (4π/3) ε_c r^3  with r = Rs*eps
         """
         if point is None:
             point = self.point_eval
 
-        # ensure cache
         rhoc = float(rhoc)
+        # refresh cache only when needed
         if (self.rhoc is None) or (self.h_c is None) or (rhoc != self.rhoc):
             self.rhoc = rhoc
             self.h_c = self.central_entalphy(rhoc)
@@ -108,24 +169,25 @@ class Numerical(Equations):
         eps = float(self.eps_center)
         Rs_arr = np.asarray(Rs, dtype=float)
 
-        a = (4.0*np.pi/3.0) * (Rs_arr**2) * rhoc
-        phi0 = 0.5 * a * (eps**2)
-        phidot0 = a * eps
-        h0 = self.h_c - phi0
+        h0 = self.h_c
+        eps_c = self.eps_from_h(h0)
 
-        phi, phidot, h = self.rkheunNewton_end(
-            phi0, phidot0, h0,
+        r0 = Rs_arr * eps
+        m0 = (4.0 * np.pi / 3.0) * eps_c * (r0**3)
+
+        m_end, h_end = self.rkheunTOV_end(
+            m0, h0,
             eps, self.r_match, int(point),
             Rs_arr
         )
-        return phi, phidot, h
+        return m_end, h_end
 
     def bound_outer(self, Rs, Ms, point=None):
         """
-        Outer integration: rhat=1 -> r_match (inward)
-        Surface BC (vacuum):
-          phi(1) = -Ms/Rs, phidot(1) = +Ms/Rs, h(1)=0
-        (rho_from_h will keep density zero outside since h<=0 region maps to rho=0)
+        Outer integration: rhat = 1 -> r_match (inward)
+        BC at surface:
+          h(1) = 0
+          m(1) = Ms
         """
         if point is None:
             point = self.point_eval
@@ -133,26 +195,25 @@ class Numerical(Equations):
         Rs_arr = np.asarray(Rs, dtype=float)
         Ms_arr = np.asarray(Ms, dtype=float)
 
-        phi0 = -Ms_arr / Rs_arr
-        phidot0 = Ms_arr / Rs_arr
+        m0 = Ms_arr
         h0 = 0.0
 
-        phi, phidot, h = self.rkheunNewton_end(
-            phi0, phidot0, h0,
+        m_end, h_end = self.rkheunTOV_end(
+            m0, h0,
             1.0, self.r_match, int(point),
             Rs_arr
         )
-        return phi, phidot, h
+        return m_end, h_end
 
-    # ------------------------------------------------------------
-    # 2D shooting residual in (Rs, Ms)
-    # ------------------------------------------------------------
+    # -------------------------
+    # 2D shooting residual for (Rs, Ms)
+    # -------------------------
     def func(self, x, point=None):
         """
-        Residual at r_match:
-          F1 = h_inter - h_outer
-          F2 = phidot_inter - phidot_outer
-        This matches the design doc definition (enthalpy and derivative continuity).
+        x = [Rs, Ms] or batch (2,k)/(k,2)
+        residual:
+          F1 = m_inter(r_match) - m_outer(r_match)
+          F2 = h_inter(r_match) - h_outer(r_match)
         """
         self.stats["func_calls"] += 1
 
@@ -169,28 +230,51 @@ class Numerical(Equations):
             Rs = x[0]
             Ms = x[1]
 
+        # positivity guard (keeps search in physical quadrant)
         Rs = np.abs(Rs)
         Ms = np.abs(Ms)
 
-        phi_i, phidot_i, h_i = self.bound_inter(self.rhoc, Rs, point=point)
-        phi_o, phidot_o, h_o = self.bound_outer(Rs, Ms, point=point)
+        m_inter, h_inter = self.bound_inter(self.rhoc, Rs, point=point)
+        m_outer, h_outer = self.bound_outer(Rs, Ms, point=point)
 
-        h_diff = h_i - h_o
-        phidot_diff = phidot_i - phidot_o
+        m_diff = m_inter - m_outer
+        h_diff = h_inter - h_outer
 
-        return np.stack([h_diff, phidot_diff], axis=0)
+        return np.stack([m_diff, h_diff], axis=0)
 
-    # ------------------------------------------------------------
-    # Batch FD Jacobian (central difference) + damped Newton
-    # ------------------------------------------------------------
+    # -------------------------
+    # Batch FD Jacobians (central difference)
+    # -------------------------
     def residual_norm(self, F):
         F = np.asarray(F, dtype=float)
         return np.sqrt(np.sum(F*F, axis=0))
 
+    def jacobian_fd2_batch(self, x, rel_step=None, point=None):
+        if rel_step is None:
+            rel_step = self.rel_step
+        if point is None:
+            point = self.point_eval
+
+        x = np.asarray(x, dtype=float)
+        h = rel_step * np.maximum(1.0, np.abs(x))
+        h = np.where(np.abs(x) < h, 0.5 * np.maximum(np.abs(x), 1e-12), h)
+
+        X = np.array([
+            [x[0] + h[0], x[0] - h[0], x[0],        x[0]],
+            [x[1],        x[1],        x[1] + h[1], x[1] - h[1]],
+        ], dtype=float)
+
+        FX = np.asarray(self.func(X, point=point), dtype=float)  # (2,4)
+
+        dF_dRs = (FX[:, 0] - FX[:, 1]) / (2.0 * h[0])
+        dF_dMs = (FX[:, 2] - FX[:, 3]) / (2.0 * h[1])
+
+        return np.column_stack([dF_dRs, dF_dMs])  # (2,2)
+
     def jacobian_and_Fx_batch(self, x, rel_step=None, point=None):
         """
-        Evaluate Fx and 2x2 Jacobian in one batched func() call:
-          X = [x, x±h e1, x±h e2] -> 5 evaluations
+        Evaluate Fx and 2x2 Jacobian in one batched call:
+          X = [x, x±h e1, x±h e2] -> 5 evaluations in one func() call.
         """
         self.stats["jac_batches"] += 1
 
@@ -214,13 +298,13 @@ class Numerical(Equations):
         dF_dRs = (FX[:, 1] - FX[:, 2]) / (2.0 * h[0])
         dF_dMs = (FX[:, 3] - FX[:, 4]) / (2.0 * h[1])
         J = np.column_stack([dF_dRs, dF_dMs])
+
         return Fx, J
 
+    # -------------------------
+    # Damped Newton (FD Jacobian), multi-start optional
+    # -------------------------
     def newton_damped(self, x0, tol=1e-10, xtol=1e-10, maxiter=25, rel_step=None, point=None):
-        """
-        Damped Newton with Armijo-like decrease on ||F|| + positivity guard.
-        FD Jacobian is central-difference (batched evaluation).
-        """
         if rel_step is None:
             rel_step = self.rel_step
         if point is None:
@@ -263,9 +347,6 @@ class Numerical(Equations):
         F_end = np.asarray(self.func(x, point=point), dtype=float)
         return x, float(np.linalg.norm(F_end)), False
 
-    # ------------------------------------------------------------
-    # Multi-start / pruning for robustness
-    # ------------------------------------------------------------
     def generate_seeds(self, Rs0, Ms0, n_seeds=64, sigma=0.6, rng=None):
         if rng is None:
             rng = np.random.default_rng(0)
@@ -319,9 +400,6 @@ class Numerical(Equations):
         x_best, nrm_best, ok_best = best
         return float(x_best[0]), float(x_best[1]), float(nrm_best), bool(ok_best)
 
-    # ------------------------------------------------------------
-    # Main shooting entry (2-stage schedule + retry)
-    # ------------------------------------------------------------
     def shooting(
         self, rhoc, Rs0, Ms0,
         point_prune=None, point_main=None,
@@ -330,10 +408,9 @@ class Numerical(Equations):
         n_seeds=128, prune_topk=10, sigma=0.6,
         parallel=False, n_jobs=-1
     ):
+        # cache + smoothing scale
         self.rhoc = float(rhoc)
-        self.h_c = self.central_entalphy(self.rhoc)
-
-        # smoothing scale (set 0.0 to disable)
+        self.h_c  = self.central_entalphy(self.rhoc)
         self.DELTA_H = 1e-12 * max(1.0, abs(self.h_c))
 
         if point_prune is None:
