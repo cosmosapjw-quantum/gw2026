@@ -1,4 +1,3 @@
-# rm_plot.py
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,26 +6,9 @@ from numerical import Numerical
 from equations import K, n
 
 
-WARM_FILE = "warm_start_newton.npy"
+# 해당 함수는 안정적인 초기 추정값을 탐색하기 위해 AI에게 생성을 부탁함
+def initial_guess(solver, rhoc0):
 
-
-def load_or_make_initial_guess(solver, rhoc0):
-    """
-    Cross-run warm-start:
-      - if warm_start_newton.npy exists, use it
-      - else use a scale-aware guess (better than (1,1))
-    """
-    if os.path.exists(WARM_FILE):
-        try:
-            Rs0, Ms0 = np.load(WARM_FILE).astype(float)
-            if np.isfinite(Rs0) and np.isfinite(Ms0) and (Rs0 > 0.0) and (Ms0 > 0.0):
-                return float(Rs0), float(Ms0)
-        except Exception:
-            pass
-
-    # Fallback guesses:
-    # For n=1 Newtonian polytrope, radius is independent of central density.
-    # Using Lane-Emden scaling with xi1=pi gives Rs ~ sqrt(pi*K/2) when G=1. (good starter)
     if abs(n - 1.0) < 1e-12:
         Rs0 = float(np.sqrt(np.pi * K / 2.0))
     else:
@@ -47,8 +29,8 @@ def rm_generator():
     rhoc_list = []
     total_list=[]
 
-    rhocs = np.logspace(-5, -3, 100, base=10)
-    Rs0, Ms0 = load_or_make_initial_guess(solver, float(rhocs[0]))
+    rhocs = np.logspace(-5, -1, 100, base=10)
+    Rs0, Ms0 = initial_guess(solver, float(rhocs[0]))
 
     for rhoc in rhocs:
         print("rhoc = ", rhoc)
@@ -65,7 +47,6 @@ def rm_generator():
         )
 
         if (not ok) or (not np.isfinite(res)):
-            # more aggressive retry
             Rs, Ms, res, ok = solver.shooting(
                 rhoc, Rs0, Ms0,
                 point_prune=solver.point_prune,
@@ -85,25 +66,19 @@ def rm_generator():
         rhoc_list.append(rhoc)
         total_list.append([rhoc, Rs, Ms])
 
-        # continuation warm-start (run 내)
+        # continuation warm-start (초기값 갱신으로 더 빠른 뉴턴-랩슨 수렴을 위해 AI에게 추천받은 부분)
         Rs0, Ms0 = Rs, Ms
-
-    # save cross-run warm start
-    if np.isfinite(Rs0) and np.isfinite(Ms0) and (Rs0 > 0.0) and (Ms0 > 0.0):
-        np.save(WARM_FILE, np.array([Rs0, Ms0], dtype=float))
 
     return np.asarray(R_list, dtype=float), np.asarray(M_list, dtype=float)
 
-
 if __name__ == "__main__":
     Rlist, Mlist = rm_generator()
-    print("Results:", Rlist, Mlist)
 
     plt.plot(Rlist, Mlist)
     ax = plt.gca()
     ax.ticklabel_format(style='plain', useOffset=False, axis='x')
     plt.xlabel("Rs")
     plt.ylabel("Ms")
-    plt.title("Newtonian Polytrope (Heun RK2 + 2D Shooting + FD Jacobian)")
+    plt.title("Newtonian Polytrope 예제")
     plt.grid(True)
     plt.show()

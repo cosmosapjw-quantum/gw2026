@@ -1,7 +1,9 @@
-# numerical.py
 import numpy as np
 from equations import Equations, K, n
 
+# 기존 shooting method 구현이 초기값에 따라 다소 민감하게 반응해서 AI에게 탐색 최적화를 요청해서 업그레이드 된 버전
+# tree search와 유사한 구조로 랜덤 초기값, line search, 및 pruning을 통해 안정성을 확보하라고 명령
+# 알고리즘 아이디어는 본인 제안, 세부적 구현을 AI에게 의뢰
 
 class Numerical(Equations):
     def __init__(self):

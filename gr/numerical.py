@@ -1,6 +1,7 @@
-# numerical.py
+# 뉴턴 버전과 차이가 거의 없음. 다만 바뀐 TOV에 해당하여 AI에게 조정을 요청함
+
 import numpy as np
-from scipy.differentiate import jacobian  # user's environment assumed to have this
+from scipy.differentiate import jacobian
 from equations import Equations, K, n
 
 class Numerical(Equations):
@@ -36,12 +37,8 @@ class Numerical(Equations):
             failures=0,
         )
 
-    # -------------------------
-    # Central enthalpy (your convention)
-    # -------------------------
     def central_entalphy(self, rhoc):
-        # rhoc interpreted as central rest-mass density rho0_c
-        return K * (1.0 + n) * rhoc**(1.0 / n)
+        return 1.0 + K * (1.0 + n) * rhoc**(1.0 / n)
 
     # -------------------------
     # SciPy FD Jacobian helper (optional)

@@ -17,9 +17,6 @@ def rkheun(f,y1,ini,fin,h):
 def oderhs(x,y):
     return y
 
-sol = solve_ivp(oderhs,[0,1],[1],'RK45')
-print(sol.y[0][-1] - rkheun(oderhs,1,0,1,1e-5))
-
 # np.empty(0)와 np.append를 넣어서 돌렸더니 너무 느려서 AI에게 물어보았고.
 # 해당 코드는 O(n^2) 복잡도를 지니고 미리 array allocation을 하면 O(n)으로 줄어든다고 답함.
 
@@ -42,10 +39,6 @@ def rkheun2D(f,y0,ydot0,ini,fin,n):
 
 def yddot(t,y,ydot):
     return - y
-
-t, y, ydot = rkheun2D(yddot,1.,0.,0.,10.,1000)
-plt.plot(t,y)
-plt.show()
 
 def rkheunPoisson_basic(phiddot,hdot,phi_ini,h_ini,t_ini,t_fin,point,Rs):
 
@@ -71,6 +64,8 @@ def rkheunPoisson_basic(phiddot,hdot,phi_ini,h_ini,t_ini,t_fin,point,Rs):
         h[i+1]=h[i] + 0.5*step*(k1h+k2h)
        
     return t, phi, phidot, h
+
+# 다음 버전은 broadcasting 및 뉴턴-랩슨 방법과 연동 가능하도록 AI에게 업그레이드 요구한 버전
 
 def rkheunPoisson(phiddot,hdot,phi_ini,h_ini,t_ini,t_fin,point,Rs):
 
@@ -106,17 +101,27 @@ def hdot(rhat,phi,phidot,h,Rs):
 def phiddot(rhat,phi,phidot,h,Rs):
     return -(2./rhat)*phidot + 4.*np.pi* Rs**2 * (h/(K*(n+1)))**n
 
-h_c = K*(1+n)*rhoc**(1.0/n)
+if __name__ == "__main__":
+    sol = solve_ivp(oderhs,[0,1],[1],'RK45')
+    print("기초적인 1차원 버전 오차", sol.y[0][-1] - rkheun(oderhs,1,0,1,1e-5))
 
-rhat_ini = 1e-5
-rhat_fin = 0.5
-point = 500
+    t, y, ydot = rkheun2D(yddot,1.,0.,0.,10.,1000)
+    plt.plot(t,y)
+    plt.savefig("rkheun2D_output.png")
+    print("기초적인 2차 ODE (SHO) 그림 생성 완료")
 
-# 실제로 ode를 풀기 위해서는 phi(0)와 phi'(0)가 필요함
-# 현재 버전에서는 게이지 자유도를 이용해 phi(0)를 임의로 0으로 잡음
-phi_ini_1 = [0.0,0.0]
+    h_c = K*(1+n)*rhoc**(1.0/n)
 
-rhat, phi, phidot, h = rkheunPoisson_basic(phiddot,hdot,phi_ini_1,h_c,rhat_ini,rhat_fin,point,1.0)
+    rhat_ini = 1e-5
+    rhat_fin = 0.5
+    point = 500
 
-plt.plot(rhat,phi)
-plt.show()
+    # 실제로 ode를 풀기 위해서는 phi(0)와 phi'(0)가 필요함
+    # 현재 버전에서는 게이지 자유도를 이용해 phi(0)를 임의로 0으로 잡음
+    phi_ini_1 = [0.0,0.0]
+
+    rhat, phi, phidot, h = rkheunPoisson_basic(phiddot,hdot,phi_ini_1,h_c,rhat_ini,rhat_fin,point,1.0)
+
+    plt.plot(rhat,phi)
+    plt.savefig("rkheunPoisson_basic_output.png")
+    print("기초적인 포아송 방정식 버전 그림 생성 완료")

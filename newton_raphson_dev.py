@@ -20,9 +20,6 @@ while abs(x1-x0) > 1e-5:
     x0 = x1
     x1 = nrbase(g,x0,delta)
 
-realsol = - 1.0
-print(x1-realsol)
-
 def nrmethod(f,x0,delta,eps):
     dfdx = (f(x0+delta)-f(x0-delta))/delta/2
     x1 = x0 - f(x0)/dfdx
@@ -34,10 +31,6 @@ def nrmethod(f,x0,delta,eps):
 
 def h(x):
     return 2*x**3 -5* x**2 + 3*x + 5
-
-mysol = nrmethod(h,100.0,1e-5,1e-5)
-realsol = fsolve(h,100.0,xtol=1e-5)
-print(mysol-realsol)
 
 def nrmethod2D_basic(f,x0,eps):
     jac = jacobian(f,x0).df
@@ -54,7 +47,7 @@ def func(x):
     x1, x2 = x
     return [x1**2-x2,x1-x2**2]
 
-print(fsolve(func,[0.3,1.2])-nrmethod2D_basic(func,[0.3,1.2],1e-4))
+# ODE 모듈과 연결하기 위해 병렬평가 및 broadcasting 가능한 버전으로 AI에게 업그레이드 요구한 버전
 
 def get_numerical_jacobian(f, x0, eps=1e-8):
     x0 = np.asarray(x0, dtype=float)
@@ -83,3 +76,14 @@ def nrmethod2D(f,x0,eps):
         if (np.abs(x1 - x0) < eps).all():
             break
     return x1
+
+if __name__ == "__main__":
+
+    realsol = - 1.0
+    print("analytic solution과 비교한 1차원 버전 오차: ",x1-realsol)
+
+    mysol = nrmethod(h,100.0,1e-5,1e-5)
+    realsol = fsolve(h,100.0,xtol=1e-5)
+    print("1차원 뉴턴-랩슨 방법 오차 : ",mysol-realsol)
+
+    print("2차원 버전 뉴턴-랩슨 방법 오차 : ",fsolve(func,[0.3,1.2])-nrmethod2D_basic(func,[0.3,1.2],1e-4))
